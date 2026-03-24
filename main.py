@@ -288,7 +288,7 @@ def save_checkpoint(state, filename=CHECKPOINT_FILE):
 def load_checkpoint(filename=CHECKPOINT_FILE):
     if os.path.exists(filename):
         print(f"✅ Found checkpoint! Resuming from {filename}...")
-        return torch.load(filename)
+        return torch.load(filename, weights_only=False)
     return None
 
 # --- Constants ---
@@ -314,10 +314,12 @@ def run_training_loop():
     if checkpoint:
         global_dna.traits = checkpoint['global_dna_traits']
         dna_states = checkpoint['population_dna']
-        for dna_state in dna_states:
+        model_weights = checkpoint.get('model_weights', [])
+        for idx, dna_state in enumerate(dna_states):
             cell = NeuralCell(global_dna)
-            # This is a simplified restore; a full restore would save/load weights
-            cell.local_dna.__dict__.update(dna_state) 
+            cell.local_dna.__dict__.update(dna_state)
+            if idx < len(model_weights):
+                cell.load_state_dict(model_weights[idx])
             population.append(cell)
         start_cycle = checkpoint['cycle']
         best_loss = checkpoint['best_loss']
@@ -331,14 +333,17 @@ def run_training_loop():
     for cycle in range(start_cycle, max_cycles):
         for batch_idx, (data, target) in enumerate(train_loader):
             
+            batch_improved = False
             for cell in population:
                 if batch_idx % 50 == 0: cell.build_model() # Periodically collapse superposition
                 loss = cell.train_step(data.to(DEVICE), target.to(DEVICE))
                 if loss < best_loss:
                     best_loss = loss
                     no_improvement_count = 0
+                    batch_improved = True
 
-            no_improvement_count += 1
+            if not batch_improved:
+                no_improvement_count += 1
             if batch_idx % 20 == 0:
                 avg_lr = np.mean([c.local_dna.learning_rate for c in population])
                 print(f"[INFO] Cycle {cycle+1}, Batch {batch_idx}: Best Loss: {best_loss:.4f}, Pop: {len(population)}, Avg LR: {avg_lr:.6f}")
@@ -379,6 +384,7 @@ def run_training_loop():
             'cycle': cycle + 1,
             'global_dna_traits': global_dna.traits,
             'population_dna': [cell.local_dna.__dict__ for cell in population],
+            'model_weights': [cell.state_dict() for cell in population],
             'best_loss': best_loss,
             'no_improvement_count': no_improvement_count
         }
